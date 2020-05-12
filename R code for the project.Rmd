@@ -1,0 +1,374 @@
+---
+title: "causal report"
+output: html_document
+---
+
+```{r, include=FALSE}
+library(foreign)
+library(ggplot2)
+library(dplyr)
+library(MatchIt)
+churn = read.csv('Telco-Customer-Churn.csv')
+churn_internet = churn %>% filter(InternetService !='No')
+```
+
+```{r include=FALSE}
+
+#feature engineering
+churn_internet$TechSupport = factor(churn_internet$TechSupport,levels = c('No','Yes'))
+churn_internet$OnlineSecurity = factor(churn_internet$OnlineSecurity,levels = c('No','Yes'))
+
+churn_internet$OnlineBackup = 
+  factor(churn_internet$OnlineBackup,levels = c('No','Yes'))
+
+churn_internet$DeviceProtection = 
+  factor(churn_internet$DeviceProtection,levels = c('No','Yes'))
+
+churn_internet$StreamingTV = 
+  factor(churn_internet$StreamingTV,levels = c('No','Yes'))
+
+churn_internet$StreamingMovies = 
+  factor(churn_internet$StreamingMovies,levels = c('No','Yes'))
+
+churn_internet$DeviceProtection = factor(churn_internet$DeviceProtection,levels = c('No','Yes'))
+churn_internet = churn_internet %>% mutate(Contract_new = ifelse(Contract !="Month-to-month",'Year',"Month-to-month"))
+
+churn_internet = churn_internet %>% mutate(is.protected = ifelse(DeviceProtection =="No",0,1))
+churn_internet = churn_internet %>% mutate(month_contract =
+                                             ifelse(Contract_new == 'Year',0,1))
+churn_internet = churn_internet %>% mutate(is.paperless =
+                                             ifelse(PaperlessBilling == 'No',0,1))
+churn_internet = churn_internet %>% mutate(is.backup =
+                                             ifelse(OnlineBackup == 'No',0,1))
+
+churn_internet = churn_internet %>% mutate(is.supported = ifelse(TechSupport == 'No',0,1))
+```
+## Scope of analysis:
+
+The conclusion and recommendation of this project should only be applied on customers who satisfy the following criteria: 
+
+* Customers who subscribed to Internet Service. 
+
+* Customers who stayed with us for less than 4 years.
+
+```{r include=FALSE}
+churn_internet_48months = churn_internet %>% filter(tenure>=1 & tenure <=48)
+```
+## Dataset used for analysis
+
+* Description of dataset: Customer data for a telecom company providing home phone and Internet services to 7,043 customers in California during Q3, 2009
+* Unit of analysis: a customer staying with the company in the begining of Q3. 
+* Source: [Kaggle](https://www.kaggle.com/blastchar/telco-customer-churn)
+* Important features:
+    + Demographic: Gender, Senior Citizen, Partnered, Dependents
+    + Enrollment status of services: Premium Tech Support (**Treatment**),Tenure in Months, Online Backup Plan, Online Security, Streaming TV, PaperlessBilling 
+    + Billing: Device Protection Plan
+    + Churn Status: Churn Label (**Outcome variable**)
+Other than Tenure in Months, all other attributes are binary variables
+
+
+
+```{r}
+#Set up treatment
+churn_internet_48months$treatment = churn_internet_48months$is.supported  
+```
+
+
+
+**Attributes included in the dataset**
+
+```{r}
+colnames(churn_internet_48months)
+```
+
+**Descriptive statistics/plots of data**
+
+A. Missingness of data:
+
+* No missing value in the data
+```{r}
+colSums(is.na(churn_internet_48months))
+```
+
+B. Distribution of important attributes
+
+```{r}
+
+apply(churn_internet_48months %>% select(!c(customerID,PhoneService,MultipleLines,DeviceProtection,Contract,month_contract,Contract_new,TotalCharges,MonthlyCharges,TotalCharges,Churn,TechSupport,tenure,is.supported,PaymentMethod)) %>% data.matrix,2,table)
+```
+
+**Interpretation:** the first row represents 0 (No), the second row represetns 1 (Yes). From the table we can see the distributions of observed attribute's value are not even except that for gender. 
+
+
+## Method
+
+### Randomization Test:
+
+Since this is an observational data, there's no guanrantee that the treatment group and test group are similar except the value of treatment. Therefore a randomization test is conducted for each observed attribute. 
+
+Moreover, most of the attributes are categorical, A **chi-square test** is performed in this case to see whether the distribution of an observed attribute is different among treatment groups.
+
+For the continuous attribute `tenure in month`, a regular t-test is performed.
+
+Besides randomization Test, a comparison among distributions of propensity score for different tratment groups also reflects the validity of randomization assumption.
+
+**Code and results of randomization tests**
+
+```{r include=FALSE}
+churn_internet_beforematch = churn_internet_48months %>% select(gender,SeniorCitizen,
+                                            Partner,
+                                            Dependents,
+                                            is.paperless,
+                                            is.protected,
+                                            is.backup,
+                                            #TechSupport,
+                                            OnlineSecurity,
+                                            StreamingTV,
+                                            StreamingMovies,
+                                            tenure,
+                                            treatment,
+                                            Churn)
+```
+
+
+```{r echo=FALSE}
+p_value_b = function(var){
+  return(chisq.test(var,churn_internet_beforematch$treatment)$p.value)
+}
+apply(churn_internet_beforematch %>% select(!c(Churn,treatment,tenure)),2,p_value_b)
+
+t.test(churn_internet_beforematch$tenure~churn_internet_beforematch$treatment)
+```
+
+
+```{r echo=FALSE}
+
+
+ps_before = glm(treatment ~as.factor(gender)+
+                          as.factor(SeniorCitizen)+
+                          as.factor(Partner)+
+                          as.factor(Dependents)+
+                          as.factor(is.paperless)+
+                          as.factor(is.backup)+
+                      #    as.factor(TechSupport)+
+                          as.factor(is.protected)+
+                  as.factor(OnlineSecurity)+
+                  as.factor(StreamingMovies)+
+                  as.factor(StreamingTV)+
+                          tenure, data = churn_internet_beforematch,
+    family = binomial)
+
+churn_internet_beforematch$PS = ps_before$fitted.values
+
+ggplot(churn_internet_beforematch,aes(x=PS,color = factor(treatment)))+geom_density()+ggtitle('Distributions of propensity scores before matching')+scale_color_discrete(name = "Treatment", labels = c("No Tech Support","Has Tech Support"))+xlab('Propensity Score')+theme_classic()
+```
+
+**Analysis of randomization test:** most randomization test return significant p-value, suggesting that the distributions of certain observed attribute are not similar among treatment groups. 
+
+**Conclusion of randomization test:** the data is not randomized for making causal inference. 
+
+### Matching: Propensity Score Approach
+
+Since the assumption of randomization fails,  we use matching technique (propensity score) to identify pairs which are similar on all characteristics except treatment - premium tech support and define them as treatment and control groups.
+
+**Assumption of propensity score approach:** the treatment assignment is fully determined by observed attributes.
+
+**parameters of matching: **
+* method = nearest
+* calibre = 0.01
+* replace = FALSE
+* ratio = 1
+
+**code of matching**
+```{r}
+match_output <- matchit(treatment ~as.factor(gender)+
+                          as.factor(SeniorCitizen)+
+                          as.factor(Partner)+
+                          as.factor(Dependents)+
+                          as.factor(is.paperless)+
+                          as.factor(is.backup)+
+                      #    as.factor(TechSupport)+
+                          as.factor(is.protected)+
+                  as.factor(OnlineSecurity)+
+                  as.factor(StreamingMovies)+
+                  as.factor(StreamingTV)+
+                          tenure
+                          , data = churn_internet_beforematch, 
+                        method = "nearest", distance = "logit", calibre=0.01,
+                        replace = FALSE)
+
+churn_internet_aftermatch = match.data(match_output)
+
+ps_after = glm(treatment ~as.factor(gender)+
+                          as.factor(SeniorCitizen)+
+                          as.factor(Partner)+
+                          as.factor(Dependents)+
+                          as.factor(is.paperless)+
+                          as.factor(is.backup)+
+                      #    as.factor(TechSupport)+
+                          as.factor(is.protected)+
+                  as.factor(OnlineSecurity)+
+                  as.factor(StreamingMovies)+
+                  as.factor(StreamingTV)+
+                          tenure, data = churn_internet_aftermatch,
+    family = binomial)
+
+churn_internet_aftermatch$PS = ps_after$fitted.values
+```
+
+**randomization test and a comparison of propensity score distributions after matching**
+```{r}
+p_value = function(var){
+  return(chisq.test(var,churn_internet_aftermatch$treatment)$p.value)
+}
+apply(churn_internet_aftermatch %>% select(!c(Churn,PS,distance,weights,treatment,tenure)),2,p_value)
+
+
+t.test(churn_internet_aftermatch$tenure~churn_internet_aftermatch$treatment)
+```
+
+
+```{r echo=FALSE}
+ggplot(churn_internet_aftermatch,aes(x=PS,color = factor(treatment)))+geom_density()+ggtitle('Distributions of propensity scores after matching')+scale_color_discrete(name = "Treatment", labels = c("No Tech Support","Has Tech Support"))+xlab('Propensity Score')+theme_classic()
+```
+
+**Change in sample size after matching**
+```{r echo=FALSE}
+paste("# of sample in each treatment group before matching")
+(table(churn_internet_beforematch$treatment))
+
+paste("# of sample in each treatment group after matching")
+(table(churn_internet_aftermatch$treatment))
+```
+
+**Interpretation of matching result:** all randomization test returns insignificant p-values (as large as 0.11). The distributions of propensity scores after matching are also mostly overlapped. The matching is successful in terms of the fullfilment of randomization assumption.
+
+### Sensitivity Analysis of Matching: 
+
+The key assumption of matching is that there is no omitted bias in the data. To validate this assumption, a sensitivity analysis of matching is conducted after major modeling. (See the second part of Modeling section)
+
+## Modeling
+
+### main modeling
+
+For the modeling part we are using all the variables. Since matching has worked the current data is as close as possible to an experiment and hence using all the variables in the model would ensure we are capturing the true effect of the treament with minimum standard deviation. In addition, many confounding variables are also lever that client can be pulled and therefore it is reasonable to measure their effects on the churn out decision with caution.
+
+**result of modeling**
+```{r echo=FALSE}
+log = glm(Churn ~ as.factor(treatment)+as.factor(gender)+
+                          as.factor(SeniorCitizen)+
+                          as.factor(Partner)+
+                          as.factor(is.backup)+
+                          as.factor(Dependents)+
+                          as.factor(is.paperless)+
+                          #as.factor(TechSupport)+
+                          as.factor(is.protected)+
+                          as.factor(OnlineSecurity)+
+                          as.factor(StreamingMovies)+
+                          as.factor(StreamingTV)+
+                          tenure, data = churn_internet_aftermatch,
+    family = binomial)
+
+summary(log)
+```
+*Interpretation and conclusion of modeling result:* 
+
+From the above model we are seeing that if a customer starts using the preimum tech support feature, there is an decrease in logodds by 0.64 and hence the probability of churning is also decreased. 
+
+Also we noticed a high positive coefficient value on the paperless billing / Streaming TV usage which translates to customers who opted for paperless billing or use company's service to watch streaming TV may be churning more but we cannot say this with full confidence as the data is matched based on premium tech support.
+
+
+### Sensitivity Analysis of Matching
+
+After multiple trials, the following setting returns a valid matching: 
+
+* Replace = TRUE (sampling control without replacement)
+
+**Result of matching:**
+```{r echo=FALSE}
+match_output_sen2 <- matchit(treatment ~as.factor(gender)+
+                          as.factor(SeniorCitizen)+
+                          as.factor(Partner)+
+                          as.factor(Dependents)+
+                          as.factor(is.paperless)+
+                          as.factor(is.backup)+
+                      #    as.factor(TechSupport)+
+                          as.factor(is.protected)+
+                  as.factor(OnlineSecurity)+
+                  as.factor(StreamingMovies)+
+                  as.factor(StreamingTV)+
+                          tenure
+                          , data = churn_internet_beforematch, 
+                        method = "nearest", distance = "probit", calibre=0.01,
+                        replace = FALSE)
+
+churn_internet_aftermatch_sen2 = match.data(match_output_sen2)
+
+ps_after_sen2 = glm(treatment ~as.factor(gender)+
+                          as.factor(SeniorCitizen)+
+                          as.factor(Partner)+
+                          as.factor(Dependents)+
+                          as.factor(is.paperless)+
+                          as.factor(is.backup)+
+                      #    as.factor(TechSupport)+
+                          as.factor(is.protected)+
+                  as.factor(OnlineSecurity)+
+                  as.factor(StreamingMovies)+
+                  as.factor(StreamingTV)+
+                          tenure, data = churn_internet_aftermatch_sen2,
+    family = binomial)
+
+churn_internet_aftermatch_sen2$PS = ps_after_sen2$fitted.values
+
+ggplot(churn_internet_aftermatch_sen2,aes(x=PS,color = factor(treatment)))+geom_density()+ggtitle('Distributions of propensity scores after matching (replace = True)')+scale_color_discrete(name = "Treatment", labels = c("No Tech Support","Has Tech Support"))+xlab('Propensity Score')+theme_classic()
+```
+
+**randomization test for each observed attribute**
+```{r}
+p_value2 = function(var){
+  return(chisq.test(var,churn_internet_aftermatch_sen2$treatment)$p.value)
+}
+apply(churn_internet_aftermatch_sen2 %>% select(!c(Churn,PS,distance,weights,treatment,tenure)),2,p_value2)
+
+
+t.test(churn_internet_aftermatch_sen2$tenure~churn_internet_aftermatch_sen2$treatment)
+```
+
+**Modeling under alternative matching result**
+```{r}
+log_a = glm(Churn ~ as.factor(treatment)+as.factor(gender)+
+                          as.factor(SeniorCitizen)+
+                          as.factor(Partner)+
+                          as.factor(is.backup)+
+                          as.factor(Dependents)+
+                          as.factor(is.paperless)+
+                          #as.factor(TechSupport)+
+                          as.factor(is.protected)+
+                          as.factor(OnlineSecurity)+
+                          as.factor(StreamingMovies)+
+                          as.factor(StreamingTV)+
+                          tenure, data = churn_internet_aftermatch_sen2,
+    family = binomial)
+
+summary(log_a)
+```
+
+**Analysis of sensitivity test result: ** With an alternative setting of matching parameters, the model detects the treatment effect on the variable, and the estimate of the scale of effect is comparable. (-0.62 vs -0.6)
+
+**Conclusion of sensitivity analysis: ** The interpretation and conclusion of the modeling result does not change with another setting of matching parameters, indicating the robustness of our analysis.
+
+##Recommendation:
+
+
+* Company should start promoting the premium tech support more so that more customers enroll in this service and reduce the chance of churn. 
+  
+  1. Advertise more about the premium tech support
+  2. offer premium tech support for a discount to encourage more customers to join.
+
+* Company should conduct a sound cost benefit analysis in advance to make sure that the ROIs of these solutions are positive.
+* company should also do more experiments to test the true impact of paperless billing / Stremaing TV usage on churn respectively.
+
+
+
+
+
